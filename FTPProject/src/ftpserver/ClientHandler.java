@@ -67,6 +67,7 @@ public class ClientHandler implements Runnable {
                     case "RNTO": checkLogin(() -> handleRnto(arg)); break;
                     case "QUIT": writer.println("221 Bye"); return;
                     case "SYST": writer.println("215 UNIX Type: L8"); break;
+                    case "TYPE": writer.println("200 Type set to " + arg); break;
                     default: writer.println("502 Not implemented");
                 }
             }
@@ -99,13 +100,16 @@ public class ClientHandler implements Runnable {
             File[] files = currentDir.toFile().listFiles();
             if (files != null) {
                 for (File f : files) {
-                    String type = f.isDirectory() ? "Thư mục" : "Tệp";
-                    out.println(f.getName() + "|" + f.length() + "|" + type);
+                    // Giả lập định dạng UNIX: drwxr-xr-x ... size ... name
+                    String perm = f.isDirectory() ? "drwxr-xr-x" : "-rw-r--r--";
+                    out.printf("%s 1 owner group %d Jan 01 00:00 %s%n", perm, f.length(), f.getName());
                 }
             }
-            writer.println("226 Done");
         } catch (Exception e) { writer.println("550 List failed"); }
-        finally { closeDataSocket(); }
+        
+        // QUAN TRỌNG: Gửi 226 SAU KHI socket dữ liệu đã đóng (try-with-resources tự đóng)
+        writer.println("226 Done");
+        closeDataSocket();
     }
 
     private void handleRetr(String filename) {
@@ -114,11 +118,15 @@ public class ClientHandler implements Runnable {
             try (Socket data = dataSocket.accept();
                  FileInputStream fis = new FileInputStream(file.toFile())) {
                 writer.println("150 Sending file");
-                byte[] buf = new byte[4096];
+                byte[] buf = new byte[8192];
                 int read;
-                while ((read = fis.read(buf)) != -1) data.getOutputStream().write(buf, 0, read);
-                writer.println("226 Done");
-            } catch (Exception e) { writer.println("550 Transfer failed"); }
+                while ((read = fis.read(buf)) != -1) {
+                    data.getOutputStream().write(buf, 0, read);
+                }
+                data.getOutputStream().flush();
+            } catch (Exception e) { writer.println("550 Transfer failed"); return; }
+            
+            writer.println("226 Done");
         } else { writer.println("550 Not found"); }
         closeDataSocket();
     }
@@ -129,11 +137,14 @@ public class ClientHandler implements Runnable {
             try (Socket data = dataSocket.accept();
                  FileOutputStream fos = new FileOutputStream(file.toFile())) {
                 writer.println("150 Receiving file");
-                byte[] buf = new byte[4096];
+                byte[] buf = new byte[8192];
                 int read;
-                while ((read = data.getInputStream().read(buf)) != -1) fos.write(buf, 0, read);
-                writer.println("226 Done");
-            } catch (Exception e) { writer.println("550 Transfer failed"); }
+                while ((read = data.getInputStream().read(buf)) != -1) {
+                    fos.write(buf, 0, read);
+                }
+            } catch (Exception e) { writer.println("550 Transfer failed"); return; }
+            
+            writer.println("226 Done");
         } else { writer.println("553 Invalid name"); }
         closeDataSocket();
     }

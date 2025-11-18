@@ -19,43 +19,35 @@ public class FileBrowserPanel extends JPanel {
         this.ftpCore = ftpCore;
         this.parentGUI = parentGUI;
         setLayout(new BorderLayout());
-        
-        // DEBUG: In ra dòng này để chắc chắn bạn đã chạy code mới
-        System.out.println("=== ĐANG CHẠY CODE FILE BROWSER MỚI (FIXED) ===");
+        System.out.println("=== GIAO DIỆN FILE BROWSER V3.0 ===");
 
-        // --- Header ---
         JPanel header = new JPanel(new BorderLayout());
         header.setBorder(BorderFactory.createMatteBorder(0, 0, 1, 0, Color.LIGHT_GRAY));
-        JLabel title = new JLabel("  Quản lý tập tin (File Manager)");
+        JLabel title = new JLabel("  Quản lý tập tin");
         title.setFont(new Font("SansSerif", Font.BOLD, 18));
         header.add(title, BorderLayout.WEST);
         
         JButton btnLogout = new JButton("Đăng xuất");
-        btnLogout.addActionListener(e -> {
-            ftpCore.disconnect();
-            parentGUI.showLoginPanel();
-        });
+        btnLogout.addActionListener(e -> { ftpCore.disconnect(); parentGUI.showLoginPanel(); });
         header.add(btnLogout, BorderLayout.EAST);
         add(header, BorderLayout.NORTH);
 
-        // --- Center: List + Preview ---
         JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
         splitPane.setDividerLocation(400);
 
         listModel = new DefaultListModel<>();
         listFiles = new JList<>(listModel);
         listFiles.setFont(new Font("Monospaced", Font.PLAIN, 14));
-        listFiles.setCellRenderer(new FileListCellRenderer()); 
-        
+        listFiles.setCellRenderer(new FileListCellRenderer());
         createContextMenu();
 
         listFiles.addMouseListener(new MouseAdapter() {
             public void mouseClicked(MouseEvent e) {
-                if (e.getClickCount() == 2) { 
-                    String selected = listFiles.getSelectedValue();
+                if (e.getClickCount() == 2) {
+                    String selected = getSelectedFileName();
                     if (selected == null) return;
                     if (selected.equals("..")) navigateUp();
-                    else if (selected.endsWith("/")) navigateTo(selected.substring(0, selected.length() - 1));
+                    else if (isDirectory(listFiles.getSelectedValue())) navigateTo(selected);
                 }
                 if (SwingUtilities.isRightMouseButton(e)) {
                     int index = listFiles.locationToIndex(e.getPoint());
@@ -64,22 +56,16 @@ public class FileBrowserPanel extends JPanel {
                 }
             }
         });
-        
-        listFiles.addListSelectionListener(e -> {
-            if (!e.getValueIsAdjusting()) previewSelectedFile();
-        });
+        listFiles.addListSelectionListener(e -> { if (!e.getValueIsAdjusting()) previewSelectedFile(); });
 
         splitPane.setLeftComponent(new JScrollPane(listFiles));
-
         textPreview = new JTextArea();
         textPreview.setEditable(false);
         JScrollPane previewScroll = new JScrollPane(textPreview);
-        previewScroll.setBorder(BorderFactory.createTitledBorder("Xem trước nội dung"));
+        previewScroll.setBorder(BorderFactory.createTitledBorder("Xem trước"));
         splitPane.setRightComponent(previewScroll);
-
         add(splitPane, BorderLayout.CENTER);
 
-        // --- Footer: Toolbar ---
         JPanel toolbar = new JPanel(new FlowLayout(FlowLayout.LEFT));
         JButton btnUpload = new JButton("Tải lên");
         JButton btnDownload = new JButton("Tải xuống");
@@ -88,7 +74,6 @@ public class FileBrowserPanel extends JPanel {
         JButton btnDelete = new JButton("Xóa");
         JButton btnRefresh = new JButton("Làm mới");
 
-        // SỬ DỤNG THREAD ĐỂ TRÁNH TREO GIAO DIỆN
         btnUpload.addActionListener(e -> actionUpload());
         btnDownload.addActionListener(e -> actionDownload());
         btnMkdir.addActionListener(e -> actionMkdir());
@@ -96,188 +81,115 @@ public class FileBrowserPanel extends JPanel {
         btnDelete.addActionListener(e -> actionDelete());
         btnRefresh.addActionListener(e -> refreshFileList());
 
-        toolbar.add(btnUpload);
-        toolbar.add(btnDownload);
-        toolbar.add(btnMkdir);
-        toolbar.add(btnRename);
-        toolbar.add(btnDelete);
-        toolbar.add(btnRefresh);
+        toolbar.add(btnUpload); toolbar.add(btnDownload); toolbar.add(btnMkdir);
+        toolbar.add(btnRename); toolbar.add(btnDelete); toolbar.add(btnRefresh);
         add(toolbar, BorderLayout.SOUTH);
     }
 
     public void refreshFileList() {
-        // Chạy trên thread riêng để không đơ khi mạng lag
         new Thread(() -> {
             currentPath = ftpCore.getWorkingDirectory();
             List<String> files = ftpCore.listFiles("");
-            
             SwingUtilities.invokeLater(() -> {
                 listModel.clear();
                 textPreview.setText("");
-                if (currentPath != null && !currentPath.equals("/") && !currentPath.isEmpty()) {
-                    listModel.addElement("..");
-                }
-                for (String line : files) {
-                    String[] parts = line.split("\\|");
-                    if (parts.length >= 3) {
-                        String name = parts[0];
-                        String type = parts[2];
-                        if (type.contains("Thư mục") || type.equalsIgnoreCase("d")) {
-                            listModel.addElement(name + "/"); 
-                        } else {
-                            listModel.addElement(name);
-                        }
-                    } else {
-                         listModel.addElement(line); 
-                    }
-                }
+                if (currentPath != null && !currentPath.equals("/") && !currentPath.isEmpty()) listModel.addElement("..");
+                for (String line : files) listModel.addElement(line);
             });
         }).start();
     }
     
+    // Tách tên file từ chuỗi "Name|Size|Type"
+    private String getSelectedFileName() {
+        String raw = listFiles.getSelectedValue();
+        if (raw == null) return null;
+        if (raw.equals("..")) return "..";
+        return raw.split("\\|")[0];
+    }
+
+    private boolean isDirectory(String raw) {
+        return raw != null && (raw.contains("Thư mục") || raw.equals(".."));
+    }
+
     private void previewSelectedFile() {
-        String selected = listFiles.getSelectedValue();
-        if (selected == null || selected.equals("..") || selected.endsWith("/")) {
-            textPreview.setText("");
-            return;
+        String name = getSelectedFileName();
+        if (name == null || name.equals("..") || isDirectory(listFiles.getSelectedValue())) {
+            textPreview.setText(""); return;
         }
-        
         new Thread(() -> {
             try {
-                File tmp = File.createTempFile("ftp_preview", ".txt");
-                tmp.deleteOnExit();
-                if (ftpCore.downloadFile(selected, tmp)) {
-                    byte[] bytes = java.nio.file.Files.readAllBytes(tmp.toPath());
-                    String content = new String(bytes, 0, Math.min(bytes.length, 5000)); 
-                    SwingUtilities.invokeLater(() -> {
-                        textPreview.setText(content);
-                        textPreview.setCaretPosition(0);
-                    });
-                } else {
-                    SwingUtilities.invokeLater(() -> textPreview.setText("[Không thể tải nội dung]"));
-                }
-            } catch (Exception e) {
-                SwingUtilities.invokeLater(() -> textPreview.setText("[Lỗi: " + e.getMessage() + "]"));
-            }
+                File tmp = File.createTempFile("ftp", ".txt");
+                if (ftpCore.downloadFile(name, tmp)) {
+                    byte[] b = java.nio.file.Files.readAllBytes(tmp.toPath());
+                    String c = new String(b, 0, Math.min(b.length, 2000));
+                    SwingUtilities.invokeLater(() -> { textPreview.setText(c); textPreview.setCaretPosition(0); });
+                } else SwingUtilities.invokeLater(() -> textPreview.setText("[Không thể xem]"));
+            } catch (Exception e) { }
         }).start();
     }
 
     private void actionUpload() {
-        JFileChooser chooser = new JFileChooser();
-        chooser.setFileSelectionMode(JFileChooser.FILES_AND_DIRECTORIES);
-        if (chooser.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
-            File localFile = chooser.getSelectedFile();
-            // QUAN TRỌNG: Chạy upload trên luồng riêng (Thread)
+        JFileChooser c = new JFileChooser();
+        c.setFileSelectionMode(JFileChooser.FILES_AND_DIRECTORIES);
+        if (c.showOpenDialog(this) == JFileChooser.APPROVE_OPTION) {
+            File f = c.getSelectedFile();
             new Thread(() -> {
-                boolean ok;
                 try {
-                    if (localFile.isDirectory()) {
-                        ok = ftpCore.uploadDirectory(localFile, localFile.getName());
-                    } else {
-                        ok = ftpCore.uploadFile(localFile, localFile.getName());
-                    }
-                    SwingUtilities.invokeLater(() -> {
-                        if(ok) { 
-                            JOptionPane.showMessageDialog(this, "Tải lên thành công!"); 
-                            refreshFileList(); 
-                        } else {
-                            JOptionPane.showMessageDialog(this, "Tải lên thất bại: " + ftpCore.getLastError());
-                        }
-                    });
-                } catch (Exception ex) {
-                    ex.printStackTrace();
-                }
+                    boolean ok = f.isDirectory() ? ftpCore.uploadDirectory(f, f.getName()) : ftpCore.uploadFile(f, f.getName());
+                    SwingUtilities.invokeLater(() -> { if(ok) { JOptionPane.showMessageDialog(this, "Xong!"); refreshFileList(); } else JOptionPane.showMessageDialog(this, "Lỗi!"); });
+                } catch(Exception e) {}
             }).start();
         }
     }
 
     private void actionDownload() {
-        String selected = listFiles.getSelectedValue();
-        if (selected == null || selected.equals("..")) return;
-        boolean isDir = selected.endsWith("/");
-        String remoteName = isDir ? selected.substring(0, selected.length()-1) : selected;
-
-        JFileChooser chooser = new JFileChooser();
-        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
-        if (chooser.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
-            File saveDir = chooser.getSelectedFile();
+        String name = getSelectedFileName();
+        if (name == null || name.equals("..")) return;
+        boolean isDir = isDirectory(listFiles.getSelectedValue());
+        
+        JFileChooser c = new JFileChooser();
+        c.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        if (c.showSaveDialog(this) == JFileChooser.APPROVE_OPTION) {
+            File dir = c.getSelectedFile();
             new Thread(() -> {
-                boolean ok;
                 try {
-                    if (isDir) ok = ftpCore.downloadDirectory(remoteName, new File(saveDir, remoteName));
-                    else ok = ftpCore.downloadFile(remoteName, new File(saveDir, remoteName));
-                    
-                    SwingUtilities.invokeLater(() -> {
-                         if(ok) JOptionPane.showMessageDialog(this, "Tải xuống hoàn tất!");
-                         else JOptionPane.showMessageDialog(this, "Tải xuống lỗi: " + ftpCore.getLastError());
-                    });
-                } catch (Exception ex) { ex.printStackTrace(); }
+                    boolean ok = isDir ? ftpCore.downloadDirectory(name, new File(dir, name)) : ftpCore.downloadFile(name, new File(dir, name));
+                    SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(this, ok ? "Tải xong!" : "Lỗi tải!"));
+                } catch(Exception e) {}
             }).start();
         }
     }
 
     private void actionDelete() {
-        String selected = listFiles.getSelectedValue();
-        if (selected == null || selected.equals("..")) return;
-        int confirm = JOptionPane.showConfirmDialog(this, "Xóa " + selected + "?");
-        if (confirm != JOptionPane.YES_OPTION) return;
-
-        boolean isDir = selected.endsWith("/");
-        String name = isDir ? selected.substring(0, selected.length()-1) : selected;
-
-        new Thread(() -> {
-            if (ftpCore.deleteFile(name)) {
-                SwingUtilities.invokeLater(() -> {
-                    refreshFileList();
-                    JOptionPane.showMessageDialog(this, "Đã xóa thành công!");
-                });
-            } else {
-                SwingUtilities.invokeLater(() -> 
-                    JOptionPane.showMessageDialog(this, "Xóa thất bại (Folder phải rỗng): " + ftpCore.getLastError()));
-            }
-        }).start();
+        String name = getSelectedFileName();
+        if (name == null || name.equals("..")) return;
+        if (JOptionPane.showConfirmDialog(this, "Xóa " + name + "?") == JOptionPane.YES_OPTION) {
+            new Thread(() -> {
+                if(ftpCore.deleteFile(name)) SwingUtilities.invokeLater(() -> { refreshFileList(); JOptionPane.showMessageDialog(this, "Đã xóa"); });
+                else SwingUtilities.invokeLater(() -> JOptionPane.showMessageDialog(this, "Lỗi xóa (Thư mục có thể không rỗng)"));
+            }).start();
+        }
     }
     
     private void actionMkdir() {
-        String name = JOptionPane.showInputDialog(this, "Tên thư mục mới:");
-        if (name != null && !name.trim().isEmpty()) {
-            if (ftpCore.makeDirectory(name)) refreshFileList();
-            else JOptionPane.showMessageDialog(this, "Lỗi: " + ftpCore.getLastError());
-        }
+        String n = JOptionPane.showInputDialog(this, "Tên:");
+        if (n!=null) { if(ftpCore.makeDirectory(n)) refreshFileList(); else JOptionPane.showMessageDialog(this, "Lỗi tạo folder"); }
     }
     
     private void actionRename() {
-        String selected = listFiles.getSelectedValue();
-        if (selected == null || selected.equals("..")) return;
-        boolean isDir = selected.endsWith("/");
-        String oldName = isDir ? selected.substring(0, selected.length()-1) : selected;
-        String newName = JOptionPane.showInputDialog(this, "Tên mới:", oldName);
-        if (newName != null) {
-            if (ftpCore.renameFile(oldName, newName)) refreshFileList();
-            else JOptionPane.showMessageDialog(this, "Lỗi: " + ftpCore.getLastError());
-        }
+        String old = getSelectedFileName();
+        if (old==null || old.equals("..")) return;
+        String n = JOptionPane.showInputDialog(this, "Tên mới:", old);
+        if (n!=null) { if(ftpCore.renameFile(old, n)) refreshFileList(); else JOptionPane.showMessageDialog(this, "Lỗi đổi tên"); }
     }
 
-    private void navigateTo(String dir) {
-        if (ftpCore.changeDirectory(dir)) refreshFileList();
-    }
-
-    private void navigateUp() {
-        if (ftpCore.changeDirectory("..")) refreshFileList();
-    }
-
+    private void navigateTo(String d) { if(ftpCore.changeDirectory(d)) refreshFileList(); }
+    private void navigateUp() { if(ftpCore.changeDirectory("..")) refreshFileList(); }
     private void createContextMenu() {
         contextMenu = new JPopupMenu();
-        JMenuItem itemDown = new JMenuItem("Tải xuống");
-        JMenuItem itemRen = new JMenuItem("Đổi tên");
-        JMenuItem itemDel = new JMenuItem("Xóa");
-        itemDown.addActionListener(e -> actionDownload());
-        itemRen.addActionListener(e -> actionRename());
-        itemDel.addActionListener(e -> actionDelete());
-        contextMenu.add(itemDown);
-        contextMenu.add(itemRen);
-        contextMenu.addSeparator();
-        contextMenu.add(itemDel);
+        JMenuItem down = new JMenuItem("Tải xuống");
+        down.addActionListener(e -> actionDownload());
+        contextMenu.add(down);
     }
 
     class FileListCellRenderer extends DefaultListCellRenderer {
@@ -288,12 +200,18 @@ public class FileBrowserPanel extends JPanel {
             if (text.equals("..")) {
                 label.setIcon(UIManager.getIcon("FileChooser.upFolderIcon"));
                 label.setText(".. (Quay lại)");
-            } else if (text.endsWith("/")) {
-                label.setIcon(UIManager.getIcon("FileView.directoryIcon"));
-                label.setText(text.substring(0, text.length()-1));
-                label.setForeground(Color.BLUE);
             } else {
-                label.setIcon(UIManager.getIcon("FileView.fileIcon"));
+                String[] parts = text.split("\\|");
+                if (parts.length >= 1) {
+                    label.setText(parts[0]); // Chỉ hiện tên file
+                    if (text.contains("Thư mục")) {
+                        label.setIcon(UIManager.getIcon("FileView.directoryIcon"));
+                        label.setForeground(Color.BLUE);
+                    } else {
+                        label.setIcon(UIManager.getIcon("FileView.fileIcon"));
+                        if (parts.length >= 2) label.setText(parts[0] + " (" + parts[1] + " bytes)");
+                    }
+                }
             }
             return label;
         }
