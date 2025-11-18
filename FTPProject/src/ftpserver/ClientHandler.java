@@ -6,27 +6,23 @@ import java.net.Socket;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.net.InetAddress;
 
 public class ClientHandler implements Runnable {
     private final Socket clientSocket;
     private final UserManager userManager;
     private BufferedReader reader;
     private PrintWriter writer;
-    private DataInputStream dataIn;
-    private DataOutputStream dataOut;
     private Path rootDir;
     private Path currentDir;
     private String username;
-    private String rnfrName; // lưu tên file nhận từ RNFR
+    private String rnfrName;
     private ServerSocket dataSocket;
-    private Socket dataConnection;
     private boolean isLoggedIn;
 
     public ClientHandler(Socket clientSocket, UserManager userManager, String rootPath) {
         this.clientSocket = clientSocket;
         this.userManager = userManager;
-        this.rootDir = Paths.get(rootPath).toAbsolutePath();
+        this.rootDir = Paths.get(rootPath).toAbsolutePath().normalize();
         this.currentDir = rootDir;
         this.isLoggedIn = false;
     }
@@ -36,332 +32,168 @@ public class ClientHandler implements Runnable {
         try {
             reader = new BufferedReader(new InputStreamReader(clientSocket.getInputStream(), "UTF-8"));
             writer = new PrintWriter(new OutputStreamWriter(clientSocket.getOutputStream(), "UTF-8"), true);
-            dataIn = new DataInputStream(clientSocket.getInputStream());
-            dataOut = new DataOutputStream(clientSocket.getOutputStream());
+            writer.println("220 FTP Server Ready");
 
-            // Gửi thông báo server sẵn sàng
-            writer.println("220 FTP Server sẵn sàng");
-
-            // Xử lý các lệnh FTP
             while (true) {
                 String line = reader.readLine();
                 if (line == null) break;
-                String[] cmdParts = line.split(" ", 2);
-                if (cmdParts.length < 1) continue;
-                String command = cmdParts[0].toUpperCase();
-                String arg = cmdParts.length > 1 ? cmdParts[1] : "";
+                String[] parts = line.split(" ", 2);
+                String cmd = parts[0].toUpperCase();
+                String arg = parts.length > 1 ? parts[1] : "";
 
-                switch (command) {
-                    case "SYST":
-                        handleSyst();
+                System.out.println("[CMD] " + cmd + " " + arg);
+
+                switch (cmd) {
+                    case "USER": username = arg; writer.println("331 Password required"); break;
+                    case "PASS": 
+                        if (userManager.authenticate(username, arg)) {
+                            isLoggedIn = true; writer.println("230 Logged in");
+                        } else { writer.println("530 Failed"); }
                         break;
-                    case "USER":
-                        handleUser(arg);
-                        break;
-                    case "PASS":
-                        handlePass(arg);
-                        break;
-                    case "LIST":
-                        if (isLoggedIn) handleList();
-                        else writer.println("530 Vui lòng đăng nhập");
-                        break;
-                    case "NLST":
-                        if (isLoggedIn) handleNlst();
-                        else writer.println("530 Vui lòng đăng nhập");
-                        break;
-                    case "STOR":
-                        if (isLoggedIn) handleStor(arg);
-                        else writer.println("530 Vui lòng đăng nhập");
-                        break;
-                    case "RETR":
-                        if (isLoggedIn) handleRetr(arg);
-                        else writer.println("530 Vui lòng đăng nhập");
-                        break;
-                    case "DELE":
-                        if (isLoggedIn) handleDele(arg);
-                        else writer.println("530 Vui lòng đăng nhập");
-                        break;
-                    case "RNFR":
-                        if (isLoggedIn) handleRnfr(arg);
-                        else writer.println("530 Vui lòng đăng nhập");
-                        break;
-                    case "RNTO":
-                        if (isLoggedIn) handleRnto(arg);
-                        else writer.println("530 Vui lòng đăng nhập");
-                        break;
-                    case "MKD":
-                        if (isLoggedIn) handleMkd(arg);
-                        else writer.println("530 Vui lòng đăng nhập");
-                        break;
-                    case "QUIT":
-                        writer.println("221 Tạm biệt");
-                        clientSocket.close();
-                        return;
-                    case "PASV":
-                        if (isLoggedIn) handlePasv();
-                        else writer.println("530 Vui lòng đăng nhập");
-                        break;
-                    case "REGISTER": // Lệnh tùy chỉnh
-                        handleRegister(arg);
-                        break;
-                    case "PWD":
-                        if (isLoggedIn) handlePwd();
-                        else writer.println("530 Vui lòng đăng nhập");
-                        break;
-                    default:
-                        writer.println("502 Lệnh không được hỗ trợ");
+                    case "REGISTER":
+                         String[] reg = arg.split(" ", 2);
+                         if (reg.length == 2 && userManager.registerUser(reg[0], reg[1])) writer.println("200 OK");
+                         else writer.println("503 Failed");
+                         break;
+                    case "PWD":  checkLogin(() -> handlePwd()); break;
+                    case "CWD":  checkLogin(() -> handleCwd(arg)); break;
+                    case "PASV": checkLogin(() -> handlePasv()); break;
+                    case "LIST": checkLogin(() -> handleList()); break;
+                    case "RETR": checkLogin(() -> handleRetr(arg)); break;
+                    case "STOR": checkLogin(() -> handleStor(arg)); break;
+                    case "DELE": checkLogin(() -> handleDele(arg)); break;
+                    case "MKD":  checkLogin(() -> handleMkd(arg)); break;
+                    case "RNFR": checkLogin(() -> handleRnfr(arg)); break;
+                    case "RNTO": checkLogin(() -> handleRnto(arg)); break;
+                    case "QUIT": writer.println("221 Bye"); return;
+                    case "SYST": writer.println("215 UNIX Type: L8"); break;
+                    default: writer.println("502 Not implemented");
                 }
             }
         } catch (IOException e) {
-            System.out.println("[INFO] Client ngắt kết nối: " + clientSocket.getInetAddress());
+            System.out.println("Client disconnected");
         } finally {
-            closeDataConnection();
-            try {
-                clientSocket.close();
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
+            try { clientSocket.close(); } catch (IOException e) {}
         }
     }
-
-    private void handleSyst() {
-        writer.println("215 UNIX Type: L8");
+    
+    private void checkLogin(Runnable action) {
+        if (isLoggedIn) action.run(); else writer.println("530 Login first");
     }
 
-    private void handleUser(String username) {
-        this.username = username;
-        writer.println("331 Vui lòng nhập mật khẩu");
-    }
-
-    private void handlePass(String password) {
+    private void handlePasv() {
         try {
-            boolean ok = userManager.authenticate(username, password);
-            if (ok) {
-                isLoggedIn = true;
-                writer.println("230 Đăng nhập thành công");
-                System.out.println("[INFO] User '" + username + "' đăng nhập thành công");
-            } else {
-                isLoggedIn = false;
-                writer.println("530 Đăng nhập thất bại");
-            }
-        } catch (Exception e) {
-            isLoggedIn = false;
-            writer.println("530 Đăng nhập thất bại");
-        }
-    }
-
-    private void handleRegister(String args) {
-        try {
-            String[] parts = args.split(" ", 2);
-            if (parts.length < 2 || parts[0].isBlank() || parts[1].isBlank()) {
-                writer.println("501 Cú pháp không hợp lệ");
-                return;
-            }
-            boolean ok = userManager.registerUser(parts[0], parts[1]);
-            writer.println(ok ? "200 Đăng ký thành công" : "503 Đăng ký thất bại");
-        } catch (Exception e) {
-            writer.println("503 Đăng ký thất bại");
-        }
-    }
-
-    private void handlePasv() throws IOException {
-        // Tạo socket dữ liệu cho chế độ passive
-        closeDataConnection();
-        dataSocket = new ServerSocket(0); // Chọn cổng ngẫu nhiên
-        int port = dataSocket.getLocalPort();
-        String host = clientSocket.getLocalAddress().getHostAddress().replace(".", ",");
-        int p1 = port / 256;
-        int p2 = port % 256;
-        writer.println(String.format("227 Entering Passive Mode (%s,%d,%d)", host, p1, p2));
+            if (dataSocket != null) dataSocket.close();
+            dataSocket = new ServerSocket(0);
+            byte[] ip = clientSocket.getLocalAddress().getAddress();
+            int port = dataSocket.getLocalPort();
+            writer.println(String.format("227 Passive Mode (%d,%d,%d,%d,%d,%d)",
+                    ip[0]&0xff, ip[1]&0xff, ip[2]&0xff, ip[3]&0xff, port/256, port%256));
+        } catch (IOException e) { writer.println("500 Error"); }
     }
 
     private void handleList() {
-        try {
-            if (!openDataConnection()) {
-                writer.println("425 Không thể mở kết nối dữ liệu");
-                return;
-            }
-            writer.println("150 Đang gửi danh sách file");
-            try (PrintWriter dataWriter = new PrintWriter(dataConnection.getOutputStream(), true)) {
-                File[] files = currentDir.toFile().listFiles();
-                if (files != null) {
-                    for (File f : files) {
-                        String type = f.isDirectory() ? "Thư mục" : "Tệp";
-                        String size = f.isFile() ? String.valueOf(f.length()) : "";
-                        dataWriter.println(f.getName() + "|" + size + "|" + type);
-                    }
+        try (Socket data = dataSocket.accept();
+             PrintWriter out = new PrintWriter(new OutputStreamWriter(data.getOutputStream(), "UTF-8"), true)) {
+            writer.println("150 Sending list");
+            File[] files = currentDir.toFile().listFiles();
+            if (files != null) {
+                for (File f : files) {
+                    String type = f.isDirectory() ? "Thư mục" : "Tệp";
+                    out.println(f.getName() + "|" + f.length() + "|" + type);
                 }
             }
-            writer.println("226 Truyền danh sách hoàn tất");
-        } catch (Exception e) {
-            writer.println("550 Lỗi khi liệt kê file");
-        } finally {
-            closeDataConnection();
-        }
-    }
-
-    private void handleNlst() {
-        try {
-            if (!openDataConnection()) {
-                writer.println("425 Không thể mở kết nối dữ liệu");
-                return;
-            }
-            writer.println("150 Đang gửi danh sách tên file");
-            try (PrintWriter dataWriter = new PrintWriter(dataConnection.getOutputStream(), true)) {
-                File[] files = currentDir.toFile().listFiles();
-                if (files != null) {
-                    for (File f : files) {
-                        dataWriter.println(f.getName());
-                    }
-                }
-            }
-            writer.println("226 Truyền danh sách tên hoàn tất");
-        } catch (Exception e) {
-            writer.println("550 Lỗi khi liệt kê tên file");
-        } finally {
-            closeDataConnection();
-        }
-    }
-
-    private void handlePwd() {
-        // Trả về thư mục hiện tại theo chuẩn 257
-        String pwd = currentDir.toAbsolutePath().toString().replace('\\', '/');
-        writer.println("257 \"" + pwd + "\" là thư mục hiện tại");
-    }
-
-    private void handleStor(String filename) {
-        try {
-            if (!openDataConnection()) {
-                writer.println("425 Không thể mở kết nối dữ liệu");
-                return;
-            }
-            writer.println("150 Đang nhận file");
-            Path filePath = currentDir.resolve(filename);
-            try (FileOutputStream fos = new FileOutputStream(filePath.toFile())) {
-                byte[] buffer = new byte[4096];
-                int read;
-                while ((read = dataConnection.getInputStream().read(buffer)) != -1) {
-                    fos.write(buffer, 0, read);
-                }
-            }
-            writer.println("226 Tải lên hoàn tất");
-        } catch (Exception e) {
-            writer.println("550 Lỗi khi tải lên file");
-        } finally {
-            closeDataConnection();
-        }
+            writer.println("226 Done");
+        } catch (Exception e) { writer.println("550 List failed"); }
+        finally { closeDataSocket(); }
     }
 
     private void handleRetr(String filename) {
-        try {
-            Path filePath = currentDir.resolve(filename);
-            if (!Files.exists(filePath)) {
-                writer.println("550 File không tồn tại");
-                return;
-            }
-            if (!openDataConnection()) {
-                writer.println("425 Không thể mở kết nối dữ liệu");
-                return;
-            }
-            writer.println("150 Đang gửi file");
-            try (FileInputStream fis = new FileInputStream(filePath.toFile())) {
-                byte[] buffer = new byte[4096];
+        Path file = resolvePath(filename);
+        if (file != null && Files.exists(file) && !Files.isDirectory(file)) {
+            try (Socket data = dataSocket.accept();
+                 FileInputStream fis = new FileInputStream(file.toFile())) {
+                writer.println("150 Sending file");
+                byte[] buf = new byte[4096];
                 int read;
-                while ((read = fis.read(buffer)) != -1) {
-                    dataConnection.getOutputStream().write(buffer, 0, read);
-                }
-            }
-            writer.println("226 Truyền file hoàn tất");
-        } catch (Exception e) {
-            writer.println("550 Lỗi khi tải file");
-        } finally {
-            closeDataConnection();
-        }
+                while ((read = fis.read(buf)) != -1) data.getOutputStream().write(buf, 0, read);
+                writer.println("226 Done");
+            } catch (Exception e) { writer.println("550 Transfer failed"); }
+        } else { writer.println("550 Not found"); }
+        closeDataSocket();
     }
 
-    private void handleDele(String filename) {
+    private void handleStor(String filename) {
+        Path file = resolvePath(filename);
+        if (file != null) {
+            try (Socket data = dataSocket.accept();
+                 FileOutputStream fos = new FileOutputStream(file.toFile())) {
+                writer.println("150 Receiving file");
+                byte[] buf = new byte[4096];
+                int read;
+                while ((read = data.getInputStream().read(buf)) != -1) fos.write(buf, 0, read);
+                writer.println("226 Done");
+            } catch (Exception e) { writer.println("550 Transfer failed"); }
+        } else { writer.println("553 Invalid name"); }
+        closeDataSocket();
+    }
+    
+    private void handleDele(String name) {
+        Path p = resolvePath(name);
         try {
-            Path path = currentDir.resolve(filename);
-            if (Files.exists(path) && Files.deleteIfExists(path)) {
-                writer.println("250 Xóa file thành công");
-            } else {
-                writer.println("550 Xóa file thất bại");
-            }
-        } catch (Exception e) {
-            writer.println("550 Lỗi khi xóa file");
-        }
+            if (p != null && Files.deleteIfExists(p)) writer.println("250 Deleted");
+            else writer.println("550 Delete failed");
+        } catch (IOException e) { writer.println("550 Failed (Not empty?)"); }
     }
-
-    private void handleRnfr(String oldName) {
+    
+    private void handleMkd(String name) {
+        Path p = resolvePath(name);
         try {
-            Path oldPath = currentDir.resolve(oldName);
-            if (Files.exists(oldPath)) {
-                rnfrName = oldName;
-                writer.println("350 Sẵn sàng để đổi tên, gửi RNTO");
-            } else {
-                rnfrName = null;
-                writer.println("550 File không tồn tại");
-            }
-        } catch (Exception e) {
-            rnfrName = null;
-            writer.println("550 Lỗi khi xử lý RNFR");
-        }
+            Files.createDirectory(p); writer.println("257 Created");
+        } catch (Exception e) { writer.println("550 Failed"); }
     }
 
+    private void handlePwd() {
+        writer.println("257 \"" + currentDir.toString().replace('\\', '/') + "\"");
+    }
+    
+    private void handleCwd(String dir) {
+        if (dir.equals("..")) {
+            if (!currentDir.equals(rootDir)) currentDir = currentDir.getParent();
+            writer.println("250 OK");
+            return;
+        }
+        Path p = resolvePath(dir);
+        if (p != null && Files.isDirectory(p)) {
+            currentDir = p; writer.println("250 OK");
+        } else writer.println("550 Failed");
+    }
+    
+    private void handleRnfr(String old) {
+        Path p = resolvePath(old);
+        if (p != null && Files.exists(p)) { rnfrName = old; writer.println("350 Ready"); }
+        else writer.println("550 Not found");
+    }
+    
     private void handleRnto(String newName) {
+        if (rnfrName == null) { writer.println("503 Sequence error"); return; }
         try {
-            if (rnfrName == null || rnfrName.isBlank()) {
-                writer.println("503 Thiếu RNFR trước RNTO");
-                return;
-            }
-            Path oldPath = currentDir.resolve(rnfrName);
-            Path newPath = currentDir.resolve(newName);
-            rnfrName = null; // reset sau khi dùng
-            if (Files.exists(oldPath) && ( !Files.exists(newPath) ) && Files.move(oldPath, newPath) != null) {
-                writer.println("250 Đổi tên thành công");
-            } else {
-                writer.println("550 Đổi tên thất bại");
-            }
-        } catch (Exception e) {
-            rnfrName = null;
-            writer.println("550 Lỗi khi đổi tên");
-        }
+            Files.move(resolvePath(rnfrName), resolvePath(newName));
+            writer.println("250 Renamed");
+        } catch (Exception e) { writer.println("550 Rename failed"); }
+        rnfrName = null;
     }
 
-    private void handleMkd(String dirname) {
+    private Path resolvePath(String input) {
+        if (input == null || input.isEmpty()) return null;
         try {
-            Path dirPath = currentDir.resolve(dirname);
-            if (!Files.exists(dirPath) && Files.createDirectory(dirPath) != null) {
-                writer.println("257 Thư mục được tạo");
-            } else {
-                writer.println("550 Tạo thư mục thất bại");
-            }
-        } catch (Exception e) {
-            writer.println("550 Lỗi khi tạo thư mục");
-        }
+            Path p = currentDir.resolve(input).normalize();
+            if (p.startsWith(rootDir)) return p;
+        } catch (Exception e) {}
+        return null;
     }
-
-    private boolean openDataConnection() throws IOException {
-        if (dataSocket == null) {
-            writer.println("425 Chưa ở chế độ passive");
-            return false;
-        }
-        dataConnection = dataSocket.accept();
-        return true;
-    }
-
-    private void closeDataConnection() {
-        try {
-            if (dataConnection != null) {
-                dataConnection.close();
-                dataConnection = null;
-            }
-            if (dataSocket != null) {
-                dataSocket.close();
-                dataSocket = null;
-            }
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
+    
+    private void closeDataSocket() {
+        try { if(dataSocket!=null) dataSocket.close(); } catch(Exception e){}
     }
 }

@@ -1,9 +1,9 @@
 package ftpclient;
 
+import org.apache.commons.net.ftp.FTP;
 import org.apache.commons.net.ftp.FTPClient;
 import org.apache.commons.net.ftp.FTPFile;
 import org.apache.commons.net.ftp.FTPReply;
-import org.apache.commons.net.ftp.FTP;
 import java.io.*;
 import java.util.ArrayList;
 import java.util.List;
@@ -16,22 +16,18 @@ public class FTPClientCore {
 
     public FTPClientCore() {
         ftpClient = new FTPClient();
+        ftpClient.setControlEncoding("UTF-8"); // Hỗ trợ tiếng Việt
     }
 
     public boolean connect(String server, int port) {
         try {
             ftpClient.connect(server, port);
-            ftpClient.enterLocalPassiveMode();
+            ftpClient.enterLocalPassiveMode(); // BẮT BUỘC: Chế độ Passive
             boolean ok = FTPReply.isPositiveCompletion(ftpClient.getReplyCode());
             this.host = ok ? server : "";
-            if (!ok) {
-                lastError = ftpClient.getReplyString();
-            } else {
-                lastError = "";
-            }
+            lastError = ok ? "" : ftpClient.getReplyString();
             return ok;
         } catch (IOException e) {
-            e.printStackTrace();
             lastError = e.getMessage();
             return false;
         }
@@ -48,7 +44,6 @@ public class FTPClientCore {
             }
             return ok;
         } catch (IOException e) {
-            e.printStackTrace();
             lastError = e.getMessage();
             return false;
         }
@@ -56,174 +51,132 @@ public class FTPClientCore {
 
     public boolean register(String user, String pass) {
         try {
-            ftpClient.sendCommand("REGISTER", user + " " + pass);
-            int replyCode = ftpClient.getReplyCode();
-            boolean ok = FTPReply.isPositiveCompletion(replyCode); // 200 cho thành công
-            if (!ok) {
-                lastError = ftpClient.getReplyString();
-            } else {
-                lastError = "";
-            }
-            return ok;
+            int code = ftpClient.sendCommand("REGISTER", user + " " + pass);
+            return FTPReply.isPositiveCompletion(code);
         } catch (IOException e) {
-            e.printStackTrace();
             lastError = e.getMessage();
             return false;
         }
     }
 
-    public boolean isConnected() {
-        return ftpClient != null && ftpClient.isConnected();
-    }
-
-    public void disconnect() {
-        try {
-            if (ftpClient.isConnected()) {
-                ftpClient.logout();
-                ftpClient.disconnect();
-            }
-            lastError = "";
-        } catch (IOException e) {
-            e.printStackTrace();
-            lastError = e.getMessage();
-        }
-    }
-
+    // Liệt kê file (Đọc raw line vì Server trả format custom)
     public List<String> listFiles(String path) {
         List<String> list = new ArrayList<>();
-        if (!isConnected()) return list;
-
         try {
-            FTPFile[] files = (path == null || path.isEmpty()) ?
-                              ftpClient.listFiles() : ftpClient.listFiles(path);
-            if (files != null && files.length > 0) {
+            String p = (path == null) ? "" : path;
+            org.apache.commons.net.ftp.FTPListParseEngine engine = ftpClient.initiateListParsing(p);
+            while (engine.hasNext()) {
+                FTPFile[] files = engine.getNext(25);
                 for (FTPFile f : files) {
-                    String name = f.getName();
-                    if (name == null || name.equals(".") || name.equals("..")) continue;
-                    String size = f.isFile() ? String.valueOf(f.getSize()) : "";
-                    String type = f.isDirectory() ? "Thư mục" : "Tệp";
-                    list.add(name + "|" + size + "|" + type);
+                    // Server trả về: name|size|type. Commons-net sẽ đưa vào RawListing
+                    if (f.getRawListing() != null) list.add(f.getRawListing());
                 }
             }
-
-            // Fallback: some custom servers don't provide parseable LIST output
-            if (list.isEmpty()) {
-                String[] names = (path == null || path.isEmpty()) ?
-                                  ftpClient.listNames() : ftpClient.listNames(path);
-                if (names != null) {
-                    for (String name : names) {
-                        if (name == null || name.equals(".") || name.equals("..")) continue;
-                        list.add(name + "||");
-                    }
-                }
-            }
-
-            lastError = "";
         } catch (IOException e) {
-            e.printStackTrace();
             lastError = e.getMessage();
         }
         return list;
     }
 
-    public boolean uploadFile(File localFile, String remotePath) {
-        if (!isConnected()) return false;
-        try (FileInputStream fis = new FileInputStream(localFile)) {
+    // Upload file lẻ
+    public boolean uploadFile(File localFile, String remoteName) {
+        try (InputStream input = new FileInputStream(localFile)) {
             ftpClient.setFileType(FTP.BINARY_FILE_TYPE);
-            return ftpClient.storeFile(remotePath, fis);
+            boolean done = ftpClient.storeFile(remoteName, input);
+            if (!done) lastError = ftpClient.getReplyString();
+            return done;
         } catch (IOException e) {
-            e.printStackTrace();
             lastError = e.getMessage();
             return false;
         }
     }
 
-    public boolean downloadFile(String remotePath, File localFile) {
-        if (!isConnected()) return false;
-        try (FileOutputStream fos = new FileOutputStream(localFile)) {
+    // Download file lẻ
+    public boolean downloadFile(String remoteName, File localFile) {
+        try (OutputStream output = new FileOutputStream(localFile)) {
             ftpClient.setFileType(FTP.BINARY_FILE_TYPE);
-            return ftpClient.retrieveFile(remotePath, fos);
+            boolean done = ftpClient.retrieveFile(remoteName, output);
+            if (!done) lastError = ftpClient.getReplyString();
+            return done;
         } catch (IOException e) {
-            e.printStackTrace();
             lastError = e.getMessage();
             return false;
         }
     }
 
-    public boolean deleteFile(String path) {
-        if (!isConnected()) return false;
-        try {
-            boolean ok = ftpClient.deleteFile(path);
-            if (!ok) lastError = ftpClient.getReplyString(); else lastError = "";
-            return ok;
-        } catch (IOException e) {
-            e.printStackTrace();
-            lastError = e.getMessage();
-            return false;
+    // Upload cả thư mục (Đệ quy)
+    public boolean uploadDirectory(File localDir, String remotePath) throws IOException {
+        ftpClient.makeDirectory(remotePath); // Tạo folder trên server
+        ftpClient.changeWorkingDirectory(remotePath); // Vào folder đó
+
+        File[] files = localDir.listFiles();
+        if (files != null) {
+            for (File item : files) {
+                if (item.isFile()) {
+                    try (InputStream input = new FileInputStream(item)) {
+                        ftpClient.setFileType(FTP.BINARY_FILE_TYPE);
+                        ftpClient.storeFile(item.getName(), input);
+                    }
+                } else if (item.isDirectory()) {
+                    // Đệ quy: upload thư mục con, sau đó quay lại
+                    uploadDirectory(item, item.getName());
+                    ftpClient.changeToParentDirectory();
+                }
+            }
         }
+        return true;
     }
 
-    public boolean renameFile(String oldPath, String newPath) {
-        try {
-            boolean ok = ftpClient.rename(oldPath, newPath);
-            if (!ok) lastError = ftpClient.getReplyString(); else lastError = "";
-            return ok;
-        } catch (IOException e) {
-            e.printStackTrace();
-            lastError = e.getMessage();
-            return false;
+    // Download cả thư mục (Đệ quy)
+    public boolean downloadDirectory(String remotePath, File localDir) throws IOException {
+        if (!localDir.exists()) localDir.mkdirs();
+        
+        // Vào thư mục remote để liệt kê
+        String current = ftpClient.printWorkingDirectory();
+        ftpClient.changeWorkingDirectory(remotePath);
+        
+        List<String> entries = listFiles(""); // Liệt kê file trong thư mục hiện tại
+        
+        for (String entry : entries) {
+            String[] parts = entry.split("\\|");
+            if (parts.length < 3) continue;
+            
+            String name = parts[0];
+            String type = parts[2];
+            
+            if (type.contains("Thư mục") || type.equalsIgnoreCase("d")) {
+                downloadDirectory(name, new File(localDir, name));
+                ftpClient.changeToParentDirectory(); // Quay lại sau khi xong folder con
+            } else {
+                try (OutputStream output = new FileOutputStream(new File(localDir, name))) {
+                    ftpClient.setFileType(FTP.BINARY_FILE_TYPE);
+                    ftpClient.retrieveFile(name, output);
+                }
+            }
         }
+        // Khôi phục vị trí cũ
+        ftpClient.changeWorkingDirectory(current);
+        return true;
     }
 
     public boolean makeDirectory(String path) {
-        if (!isConnected()) return false;
-        try {
-            boolean ok = ftpClient.makeDirectory(path);
-            if (!ok) lastError = ftpClient.getReplyString(); else lastError = "";
-            return ok;
-        } catch (IOException e) {
-            e.printStackTrace();
-            lastError = e.getMessage();
-            return false;
-        }
+        try { return ftpClient.makeDirectory(path); } catch (IOException e) { lastError=e.getMessage(); return false; }
     }
-
-    public String getLastError() {
-        return lastError;
+    public boolean deleteFile(String path) {
+        try { return ftpClient.deleteFile(path); } catch (IOException e) { lastError=e.getMessage(); return false; }
     }
-
-    public String getHost() {
-        return host;
+    public boolean renameFile(String from, String to) {
+        try { return ftpClient.rename(from, to); } catch (IOException e) { lastError=e.getMessage(); return false; }
     }
-
-    public String getUser() {
-        return user;
-    }
-
-    public String getWorkingDirectory() {
-        if (!isConnected()) return "";
-        try {
-            String pwd = ftpClient.printWorkingDirectory();
-            return pwd == null ? "" : pwd;
-        } catch (IOException e) {
-            lastError = e.getMessage();
-            return "";
-        }
-    }
-
     public boolean changeDirectory(String path) {
-        if (!isConnected()) return false;
-        try {
-            boolean ok = ftpClient.changeWorkingDirectory(path);
-            if (!ok) {
-                lastError = ftpClient.getReplyString();
-            } else {
-                lastError = "";
-            }
-            return ok;
-        } catch (IOException e) {
-            lastError = e.getMessage();
-            return false;
-        }
+        try { return ftpClient.changeWorkingDirectory(path); } catch (IOException e) { lastError=e.getMessage(); return false; }
     }
+    public String getWorkingDirectory() {
+        try { return ftpClient.printWorkingDirectory(); } catch(Exception e) { return ""; }
+    }
+    public void disconnect() { try { ftpClient.disconnect(); } catch(Exception e){} }
+    public boolean isConnected() { return ftpClient.isConnected(); }
+    public String getLastError() { return lastError; }
+    public String getHost() { return host; }
+    public String getUser() { return user; }
 }
