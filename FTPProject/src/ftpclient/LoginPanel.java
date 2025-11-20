@@ -8,7 +8,6 @@ import java.awt.event.MouseEvent;
 public class LoginPanel extends JPanel {
     private final JTextField txtUser;
     private final JPasswordField txtPass;
-    private final JButton btnLogin;
     private final FTPClientCore client;
     private final FTPClientGUI parent;
 
@@ -49,12 +48,21 @@ public class LoginPanel extends JPanel {
         gbc.gridx = 1; gbc.anchor = GridBagConstraints.LINE_START;
         add(txtPass, gbc);
 
-        // Nút đăng nhập
-        btnLogin = new JButton("Đăng nhập");
+        // Panel chứa 2 nút: Đăng nhập và Ngắt kết nối
+        JPanel btnPanel = new JPanel(new FlowLayout());
+        
+        JButton btnLogin = new JButton("Đăng nhập");
         btnLogin.setFont(new Font("Arial", Font.BOLD, 14));
+        
+        JButton btnDisconnect = new JButton("Ngắt kết nối");
+        btnDisconnect.setFont(new Font("Arial", Font.PLAIN, 14));
+
+        btnPanel.add(btnLogin);
+        btnPanel.add(btnDisconnect);
+
         gbc.gridx = 0; gbc.gridy = 3; gbc.gridwidth = 2;
         gbc.anchor = GridBagConstraints.CENTER;
-        add(btnLogin, gbc);
+        add(btnPanel, gbc);
 
         // Link Đăng ký
         JLabel lblRegister = new JLabel("Chưa có tài khoản? Đăng ký");
@@ -79,6 +87,12 @@ public class LoginPanel extends JPanel {
             } else {
                 JOptionPane.showMessageDialog(this, "Đăng nhập thất bại!");
             }
+        });
+        
+        // Sự kiện Ngắt kết nối (Quay về màn hình nhập IP)
+        btnDisconnect.addActionListener(e -> {
+            client.disconnect();
+            parent.showConnectPanel();
         });
 
         // Sự kiện click Đăng ký

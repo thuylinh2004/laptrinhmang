@@ -1,6 +1,7 @@
 package ftpserver;
 
 import java.io.*;
+import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.nio.file.Files;
@@ -16,12 +17,13 @@ public class ClientHandler implements Runnable {
     private Path currentDir;
     private String username;
     private String rnfrName;
-    private ServerSocket dataSocket;
+    private ServerSocket dataSocket; // Cổng PASV
     private boolean isLoggedIn;
 
     public ClientHandler(Socket clientSocket, UserManager userManager, String rootPath) {
         this.clientSocket = clientSocket;
         this.userManager = userManager;
+        // Sử dụng toAbsolutePath để tránh lỗi đường dẫn tương đối
         this.rootDir = Paths.get(rootPath).toAbsolutePath().normalize();
         this.currentDir = rootDir;
         this.isLoggedIn = false;
@@ -37,43 +39,56 @@ public class ClientHandler implements Runnable {
             while (true) {
                 String line = reader.readLine();
                 if (line == null) break;
+                
+                System.out.println("[CMD] " + line);
+                
                 String[] parts = line.split(" ", 2);
                 String cmd = parts[0].toUpperCase();
                 String arg = parts.length > 1 ? parts[1] : "";
 
-                System.out.println("[CMD] " + cmd + " " + arg);
-
-                switch (cmd) {
-                    case "USER": username = arg; writer.println("331 Password required"); break;
-                    case "PASS": 
-                        if (userManager.authenticate(username, arg)) {
-                            isLoggedIn = true; writer.println("230 Logged in");
-                        } else { writer.println("530 Failed"); }
-                        break;
-                    case "REGISTER":
-                         String[] reg = arg.split(" ", 2);
-                         if (reg.length == 2 && userManager.registerUser(reg[0], reg[1])) writer.println("200 OK");
-                         else writer.println("503 Failed");
-                         break;
-                    case "PWD":  checkLogin(() -> handlePwd()); break;
-                    case "CWD":  checkLogin(() -> handleCwd(arg)); break;
-                    case "PASV": checkLogin(() -> handlePasv()); break;
-                    case "LIST": checkLogin(() -> handleList()); break;
-                    case "RETR": checkLogin(() -> handleRetr(arg)); break;
-                    case "STOR": checkLogin(() -> handleStor(arg)); break;
-                    case "DELE": checkLogin(() -> handleDele(arg)); break;
-                    case "MKD":  checkLogin(() -> handleMkd(arg)); break;
-                    case "RNFR": checkLogin(() -> handleRnfr(arg)); break;
-                    case "RNTO": checkLogin(() -> handleRnto(arg)); break;
-                    case "QUIT": writer.println("221 Bye"); return;
-                    case "SYST": writer.println("215 UNIX Type: L8"); break;
-                    case "TYPE": writer.println("200 Type set to " + arg); break;
-                    default: writer.println("502 Not implemented");
+                try {
+                    switch (cmd) {
+                        case "USER": username = arg; writer.println("331 Password required"); break;
+                        case "PASS": 
+                            if (userManager.authenticate(username, arg)) {
+                                isLoggedIn = true; writer.println("230 Logged in");
+                            } else { writer.println("530 Failed"); }
+                            break;
+                        case "LOGOUT": // Xử lý đăng xuất nhưng không ngắt kết nối socket
+                            isLoggedIn = false;
+                            username = null;
+                            writer.println("220 Logged out");
+                            break;
+                        case "REGISTER":
+                             String[] reg = arg.split(" ", 2);
+                             if (reg.length == 2 && userManager.registerUser(reg[0], reg[1])) writer.println("200 OK");
+                             else writer.println("503 Failed");
+                             break;
+                        case "PWD":  checkLogin(() -> handlePwd()); break;
+                        case "CWD":  checkLogin(() -> handleCwd(arg)); break;
+                        case "PASV": checkLogin(() -> handlePasv()); break;
+                        case "LIST": checkLogin(() -> handleList()); break;
+                        case "RETR": checkLogin(() -> handleRetr(arg)); break;
+                        case "STOR": checkLogin(() -> handleStor(arg)); break;
+                        case "DELE": checkLogin(() -> handleDele(arg)); break;
+                        case "MKD":  checkLogin(() -> handleMkd(arg)); break;
+                        case "RNFR": checkLogin(() -> handleRnfr(arg)); break;
+                        case "RNTO": checkLogin(() -> handleRnto(arg)); break;
+                        case "QUIT": writer.println("221 Bye"); return;
+                        case "SYST": writer.println("215 UNIX Type: L8"); break;
+                        case "TYPE": writer.println("200 Type set to " + arg); break;
+                        default: writer.println("502 Not implemented");
+                    }
+                } catch (Exception ex) {
+                    ex.printStackTrace();
+                    writer.println("500 Internal Server Error");
+                    closeDataSocket(); 
                 }
             }
         } catch (IOException e) {
-            System.out.println("Client disconnected");
+            System.out.println("Client disconnected: " + e.getMessage());
         } finally {
+            closeDataSocket();
             try { clientSocket.close(); } catch (IOException e) {}
         }
     }
@@ -83,70 +98,104 @@ public class ClientHandler implements Runnable {
     }
 
     private void handlePasv() {
+        closeDataSocket(); 
         try {
-            if (dataSocket != null) dataSocket.close();
             dataSocket = new ServerSocket(0);
             byte[] ip = clientSocket.getLocalAddress().getAddress();
+            if (clientSocket.getLocalAddress().isAnyLocalAddress()) {
+                 ip = InetAddress.getLocalHost().getAddress();
+            }
+            
             int port = dataSocket.getLocalPort();
             writer.println(String.format("227 Passive Mode (%d,%d,%d,%d,%d,%d)",
                     ip[0]&0xff, ip[1]&0xff, ip[2]&0xff, ip[3]&0xff, port/256, port%256));
-        } catch (IOException e) { writer.println("500 Error"); }
+        } catch (IOException e) { 
+            writer.println("500 Error entering Passive Mode"); 
+        }
     }
 
     private void handleList() {
-        try (Socket data = dataSocket.accept();
+        if (dataSocket == null || dataSocket.isClosed()) {
+            writer.println("425 Use PASV first");
+            return;
+        }
+
+        try (Socket data = dataSocket.accept(); 
              PrintWriter out = new PrintWriter(new OutputStreamWriter(data.getOutputStream(), "UTF-8"), true)) {
-            writer.println("150 Sending list");
+            
+            writer.println("150 Sending list"); 
+
             File[] files = currentDir.toFile().listFiles();
             if (files != null) {
                 for (File f : files) {
-                    // Giả lập định dạng UNIX: drwxr-xr-x ... size ... name
                     String perm = f.isDirectory() ? "drwxr-xr-x" : "-rw-r--r--";
                     out.printf("%s 1 owner group %d Jan 01 00:00 %s%n", perm, f.length(), f.getName());
                 }
             }
-        } catch (Exception e) { writer.println("550 List failed"); }
+            out.flush(); 
+            
+        } catch (Exception e) {
+            writer.println("550 List failed");
+            return;
+        } finally {
+            closeDataSocket(); 
+        }
         
-        // QUAN TRỌNG: Gửi 226 SAU KHI socket dữ liệu đã đóng (try-with-resources tự đóng)
-        writer.println("226 Done");
-        closeDataSocket();
+        writer.println("226 Done"); 
     }
 
     private void handleRetr(String filename) {
         Path file = resolvePath(filename);
         if (file != null && Files.exists(file) && !Files.isDirectory(file)) {
             try (Socket data = dataSocket.accept();
-                 FileInputStream fis = new FileInputStream(file.toFile())) {
+                 FileInputStream fis = new FileInputStream(file.toFile());
+                 OutputStream os = data.getOutputStream()) {
+                 
                 writer.println("150 Sending file");
                 byte[] buf = new byte[8192];
                 int read;
                 while ((read = fis.read(buf)) != -1) {
-                    data.getOutputStream().write(buf, 0, read);
+                    os.write(buf, 0, read);
                 }
-                data.getOutputStream().flush();
-            } catch (Exception e) { writer.println("550 Transfer failed"); return; }
-            
-            writer.println("226 Done");
-        } else { writer.println("550 Not found"); }
-        closeDataSocket();
+                os.flush();
+            } catch (Exception e) { 
+                writer.println("550 Transfer failed"); 
+                return;
+            } finally {
+                closeDataSocket();
+            }
+            writer.println("226 Done"); 
+        } else { 
+            writer.println("550 Not found"); 
+            closeDataSocket();
+        }
     }
 
     private void handleStor(String filename) {
         Path file = resolvePath(filename);
         if (file != null) {
             try (Socket data = dataSocket.accept();
-                 FileOutputStream fos = new FileOutputStream(file.toFile())) {
+                 FileOutputStream fos = new FileOutputStream(file.toFile());
+                 InputStream is = data.getInputStream()) {
+                 
                 writer.println("150 Receiving file");
                 byte[] buf = new byte[8192];
                 int read;
-                while ((read = data.getInputStream().read(buf)) != -1) {
+                while ((read = is.read(buf)) != -1) {
                     fos.write(buf, 0, read);
                 }
-            } catch (Exception e) { writer.println("550 Transfer failed"); return; }
-            
-            writer.println("226 Done");
-        } else { writer.println("553 Invalid name"); }
-        closeDataSocket();
+                fos.flush();
+            } catch (Exception e) { 
+                writer.println("550 Transfer failed"); 
+                return;
+            } finally {
+                closeDataSocket();
+            }
+            writer.println("226 Done"); 
+        } else { 
+            writer.println("553 Invalid name"); 
+            closeDataSocket();
+        }
     }
     
     private void handleDele(String name) {
@@ -165,19 +214,27 @@ public class ClientHandler implements Runnable {
     }
 
     private void handlePwd() {
-        writer.println("257 \"" + currentDir.toString().replace('\\', '/') + "\"");
+        String relativePath = rootDir.relativize(currentDir).toString();
+        String displayPath = "/" + relativePath.replace('\\', '/');
+        if (displayPath.equals("/.")) displayPath = "/"; 
+        writer.println("257 \"" + displayPath + "\"");
     }
     
     private void handleCwd(String dir) {
         if (dir.equals("..")) {
-            if (!currentDir.equals(rootDir)) currentDir = currentDir.getParent();
+            if (!currentDir.equals(rootDir)) {
+                currentDir = currentDir.getParent();
+            }
             writer.println("250 OK");
-            return;
+        } else {
+            Path p = resolvePath(dir);
+            if (p != null && Files.isDirectory(p)) {
+                currentDir = p; 
+                writer.println("250 OK");
+            } else { 
+                writer.println("550 Failed"); 
+            }
         }
-        Path p = resolvePath(dir);
-        if (p != null && Files.isDirectory(p)) {
-            currentDir = p; writer.println("250 OK");
-        } else writer.println("550 Failed");
     }
     
     private void handleRnfr(String old) {
@@ -205,6 +262,11 @@ public class ClientHandler implements Runnable {
     }
     
     private void closeDataSocket() {
-        try { if(dataSocket!=null) dataSocket.close(); } catch(Exception e){}
+        try { 
+            if(dataSocket != null && !dataSocket.isClosed()) {
+                dataSocket.close();
+            }
+        } catch(Exception e){}
+        dataSocket = null; 
     }
 }

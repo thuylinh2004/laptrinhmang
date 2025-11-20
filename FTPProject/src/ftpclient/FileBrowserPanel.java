@@ -27,9 +27,27 @@ public class FileBrowserPanel extends JPanel {
         title.setFont(new Font("SansSerif", Font.BOLD, 18));
         header.add(title, BorderLayout.WEST);
         
+        // Panel chứa các nút chức năng thoát
+        JPanel pnlActions = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+
+        // Nút 1: Đăng xuất (Về màn hình Login, giữ kết nối)
         JButton btnLogout = new JButton("Đăng xuất");
-        btnLogout.addActionListener(e -> { ftpCore.disconnect(); parentGUI.showLoginPanel(); });
-        header.add(btnLogout, BorderLayout.EAST);
+        btnLogout.addActionListener(e -> { 
+            ftpCore.logout(); 
+            parentGUI.showLoginPanel(); 
+        });
+        
+        // Nút 2: Ngắt kết nối (Về màn hình Connect, đóng socket)
+        JButton btnDisconnect = new JButton("Ngắt kết nối");
+        btnDisconnect.setBackground(new Color(255, 200, 200));
+        btnDisconnect.addActionListener(e -> {
+            ftpCore.disconnect();
+            parentGUI.showConnectPanel();
+        });
+        
+        pnlActions.add(btnLogout);
+        pnlActions.add(btnDisconnect);
+        header.add(pnlActions, BorderLayout.EAST);
         add(header, BorderLayout.NORTH);
 
         JSplitPane splitPane = new JSplitPane(JSplitPane.HORIZONTAL_SPLIT);
@@ -99,7 +117,6 @@ public class FileBrowserPanel extends JPanel {
         }).start();
     }
     
-    // Tách tên file từ chuỗi "Name|Size|Type"
     private String getSelectedFileName() {
         String raw = listFiles.getSelectedValue();
         if (raw == null) return null;
@@ -203,7 +220,7 @@ public class FileBrowserPanel extends JPanel {
             } else {
                 String[] parts = text.split("\\|");
                 if (parts.length >= 1) {
-                    label.setText(parts[0]); // Chỉ hiện tên file
+                    label.setText(parts[0]); 
                     if (text.contains("Thư mục")) {
                         label.setIcon(UIManager.getIcon("FileView.directoryIcon"));
                         label.setForeground(Color.BLUE);

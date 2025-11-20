@@ -22,7 +22,7 @@ public class FTPClientCore {
     public boolean connect(String server, int port) {
         try {
             ftpClient.connect(server, port);
-            ftpClient.enterLocalPassiveMode(); // Quan trọng
+            ftpClient.enterLocalPassiveMode(); 
             boolean ok = FTPReply.isPositiveCompletion(ftpClient.getReplyCode());
             this.host = ok ? server : "";
             lastError = ok ? "" : ftpClient.getReplyString();
@@ -41,6 +41,17 @@ public class FTPClientCore {
             return false;
         }
     }
+    
+    // Hàm đăng xuất nhưng không ngắt kết nối socket
+    public boolean logout() {
+        try {
+            int reply = ftpClient.sendCommand("LOGOUT");
+            return FTPReply.isPositiveCompletion(reply);
+        } catch (IOException e) {
+            lastError = e.getMessage();
+            return false;
+        }
+    }
 
     public boolean register(String user, String pass) {
         try {
@@ -51,12 +62,10 @@ public class FTPClientCore {
         }
     }
 
-    // Trả về danh sách file đã được định dạng: Name|Size|Type
     public List<String> listFiles(String path) {
         List<String> list = new ArrayList<>();
         try {
             String p = (path == null) ? "" : path;
-            // Server giờ trả về Unix format nên hàm chuẩn này sẽ hoạt động tốt
             FTPFile[] files = ftpClient.listFiles(p);
             for (FTPFile f : files) {
                 if (f.getName().equals(".") || f.getName().equals("..")) continue;
@@ -102,10 +111,11 @@ public class FTPClientCore {
                     }
                 } else if (item.isDirectory()) {
                     uploadDirectory(item, item.getName());
-                    ftpClient.changeToParentDirectory();
                 }
             }
         }
+        // QUAN TRỌNG: Quay lại thư mục cha sau khi upload xong folder con
+        ftpClient.changeToParentDirectory();
         return true;
     }
 
